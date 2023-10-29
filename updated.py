@@ -1,0 +1,108 @@
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsRegressor
+from scipy.fft import fft
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RandomizedSearchCV
+import psycopg2
+import pickle
+from sklearn.metrics import mean_squared_error
+import json
+
+
+def ml_model():
+    channels = list(range(1, 15))
+    def interpolate():
+        """
+        Interpolate missing values in the data. (If data contains NaNs)
+        """
+        for i in channels:
+            knn_model = KNeighborsRegressor(n_neighbors=3)
+            knn_model.fit(data[i], data[i])
+            data[i] = knn_model.predict(data[i])
+
+    def handle_outliers():
+        """
+        Handle outliers based on Interquartile Range (IQR).
+        """
+        for i in range(len(channels)):
+            curr = data[:, :, i]
+            iqr = np.percentile(curr, 75) - np.percentile(curr, 25)
+            fstQ = np.percentile(curr, 25)
+            thdQ = np.percentile(curr, 75)
+            # Replace outliers with the median of the data for that channel
+            median_val = np.median(curr)
+            for x in range(len(curr)):
+                for y in range(len(curr[x])):
+                    if curr[x][y] > (thdQ + 1.5 * iqr) or curr[x][y] < (fstQ - 1.5 * iqr):
+                        curr[x][y] = median_val
+            data[:,:,i] = curr
+
+    def extract_features_from_channel(data):
+        """
+        Extract FFT features from EEG data.
+        """
+        fft_features = np.abs(fft(data, axis=1))
+        delta_band = np.mean(fft_features[:, 0:4], axis=1).reshape(-1, 1)
+        theta_band = np.mean(fft_features[:, 4:8], axis=1).reshape(-1, 1)
+        alpha_band = np.mean(fft_features[:, 8:12], axis=1).reshape(-1, 1)
+        beta_band = np.mean(fft_features[:, 12:30], axis=1).reshape(-1, 1)
+        gamma_band = np.mean(fft_features[:, 30:45], axis=1).reshape(-1, 1)
+
+        return np.hstack([delta_band, theta_band, alpha_band, beta_band, gamma_band])
+
+    # Extract features for each channel and combine
+    interpolate()
+    handle_outliers()
+    features_list = [extract_features_from_channel(data[:, :, i]) for i in range(len(channels))]
+    features = np.hstack(features_list)
+
+    # Split data into train and test sets
+    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2)
+
+    # Define hyperparameter distributions
+    param_dist = {
+        'n_estimators': list(range(50,500)),
+        'max_depth': list(range(1,20))
+    }
+
+    # Randomized search for best hyperparameters
+    rf = RandomForestClassifier()
+    rand_search = RandomizedSearchCV(rf, param_distributions=param_dist, n_iter=5, cv=5)
+    rand_search.fit(X_train, y_train)
+    best_rf = rand_search.best_estimator_
+
+# Establish a connection to the CockroachDB cluster
+try:
+
+    conn = psycopg2.connect('postgresql://t:yOQkfZS9LoTsvPL4fozvaA@good-stag-12544.7tt.cockroachlabs.cloud:26257/defaultdb?sslmode=verify-full')
+    # Create a cursor object to execute SQL queries
+    cursor = conn.cursor()
+
+    with cursor as cur:
+        sql_query = "SELECT * FROM eeg_data;"
+        cur.execute(sql_query)
+        conn.commit() 
+
+    # Fetch all the rows from the query result
+    rows = cursor.fetchall()
+
+    # Process the fetched data
+    for row in rows:
+
+        data = json.loads(row)
+        print(data)
+
+        ml_model()
+
+    # Close the cursor and connection
+    cursor.close()
+    conn.close()
+
+except psycopg2.Error as e:
+    print("Error connecting to CockroachDB:", e)
+# Define channels, data, and labels
+"""channels = list(range(1, 15))
+data = np.random.randn(1000, 120, 14)
+labels = np.random.randint(0, 2, 1000)"""
