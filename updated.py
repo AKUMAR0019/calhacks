@@ -72,6 +72,8 @@ def ml_model():
     rand_search = RandomizedSearchCV(rf, param_distributions=param_dist, n_iter=5, cv=5)
     rand_search.fit(X_train, y_train)
     best_rf = rand_search.best_estimator_
+    return best_rf.predict(y_test)
+
 
 # Establish a connection to the CockroachDB cluster
 try:
